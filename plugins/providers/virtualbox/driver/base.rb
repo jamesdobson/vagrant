@@ -1,4 +1,5 @@
 require 'log4r'
+require 'nokogiri'
 
 require 'vagrant/util/busy'
 require 'vagrant/util/platform'
@@ -54,6 +55,29 @@ module VagrantPlugins
           end
 
           @logger.info("VBoxManage path: #{@vboxmanage_path}")
+        end
+
+        def attach_virtual_disks(machine_id, virtual_disks)
+          # Find existing disks known to VirtualBox
+          output = execute("list", "-l", "hdds")
+          lines = output.split("\n")
+
+          # Attach disks to the VM
+          virtual_disks.each do |disk|
+            params = [
+              "--storagectl", disk[:controller],
+              "--port", disk[:port],
+              "--device", disk[:device],
+              "--type", "hdd",
+              "--medium", disk[:file]
+            ]
+
+            if lines.index {|line| line.index(disk[:file]) != nil} == nil
+              params << "--mtype" << "multiattach"
+            end
+
+            execute("storageattach", machine_id, *params)
+          end
         end
 
         # Clears the forwarded ports that have been set on the virtual machine.
@@ -148,6 +172,13 @@ module VagrantPlugins
         def forward_ports(ports)
         end
 
+        def get_machine_id(machine_name)
+          output = execute("list", "vms", retryable: true)
+          match = /^"#{Regexp.escape(machine_name)}" \{(.+?)\}$/.match(output)
+          return match[1].to_s if match
+          nil
+        end
+
         # Halts the virtual machine (pulls the plug).
         def halt
         end
@@ -159,9 +190,115 @@ module VagrantPlugins
         def import(ovf)
         end
 
+        # Imports the VM from an OVF file. The disk images in the box are used
+        # in multiattach mode, speeding the import process.
+        #
+        # @param [String] ovf Path to the OVF file.
+        # @return [String] UUID of the imported VM.
+        def import_multiattach(ovf)
+          virtual_disks, doc = parse_ovf(ovf)
+
+          # Write out a new OVF with no references to disk images
+          ovf = File.absolute_path("box-linked-clone.ovf", File.dirname(ovf))
+          f = File.open(ovf, 'w')
+          doc.write_xml_to(f)
+          f.close()
+
+          # Import the OVF that has no disks
+          machine_id = import(ovf)
+
+          attach_virtual_disks(machine_id, virtual_disks)
+
+          return machine_id
+        end
+
         # Returns the maximum number of network adapters.
         def max_network_adapters
           8
+        end
+
+        # Parses the OVF. The disk images referenced by the OVF are removed
+        # from the returned DOM and returned as a separate return value.
+        #
+        # @param [String] ovf_file Path to the OVF file.
+        def parse_ovf(ovf_file)
+          # Parse the OVF
+          f = File.open(ovf_file)
+          doc = Nokogiri::XML(f)
+          f.close()
+
+          # Extract prefixes for the namespaces we care about
+          ovf = rasd = vbox = ""
+          doc.namespaces.each do |prefix, namespace|
+            prefix_start = prefix.index(":")
+            if prefix_start != nil
+              prefix_start += 1
+              case namespace
+                when "http://schemas.dmtf.org/ovf/envelope/1"
+                  ovf = prefix[prefix_start..-1]
+                when "http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData"
+                  rasd = prefix[prefix_start..-1]
+                when "http://www.virtualbox.org/ovf/machine"
+                  vbox = prefix[prefix_start..-1]
+              end
+            end
+          end
+
+          if ovf == "" or rasd == "" or vbox == ""
+            raise Vagrant::Errors::VMImportFailure
+          end
+
+          # Create a map of disk UUIDs to the disk file paths
+          # Also remove the Disk, File, and VirtalHardwareSection/Item nodes associated with the disks
+          ovf_base_dir = File.dirname(ovf_file)
+          uuid_path_map = {}
+          disks = doc.xpath("//#{ovf}:Disk")
+          disks.each do |disk|
+            fileRef = disk["#{ovf}:fileRef"]
+
+            # Skip empty disks
+            next if fileRef == nil
+
+            uuid = disk["#{vbox}:uuid"]
+            diskId = disk["#{ovf}:diskId"]
+
+            # Compute the path to the disk image and remove the associated File node
+            files = doc.xpath("//#{ovf}:References/#{ovf}:File[@#{ovf}:id='#{fileRef}']")
+            file = files.first
+            href = file["#{ovf}:href"]
+            uuid_path_map[uuid] = File.absolute_path(href, ovf_base_dir)
+            files.remove
+
+            # Remove the associated VirtualHardwareSection/Item
+            items = doc.xpath("//#{ovf}:Item[#{rasd}:HostResource/.='/disk/#{diskId}']")
+            items.remove
+
+            disk.remove
+          end
+
+          # Find all StorageControllers/StorageController/AttachedDevice that point to Disks and
+          # remove them, taking note of the controller name to which they are attached and the
+          # port and device numbers where they are attached.
+          virtual_disks = []
+          controllers = doc.xpath("//#{ovf}:StorageController")
+          controllers.each do |controller|
+            name = controller["name"]
+            devices = controller.xpath("#{ovf}:AttachedDevice")
+            devices.each do |device|
+              portIndex = device["port"]
+              deviceIndex = device["device"]
+              uuidNode = device.xpath("#{ovf}:Image/@uuid").first
+
+              if uuidNode != nil
+                uuid = uuidNode.content[1..-2]
+                @logger.debug("Found virtual disk #{uuid} on '#{name}':#{portIndex}:#{deviceIndex} at #{uuid_path_map[uuid]}")
+                virtual_disks.push({:controller => name, :file => uuid_path_map[uuid], :port => portIndex, :device => deviceIndex})
+                device.remove
+              end
+            end
+          end
+
+          return virtual_disks, doc
         end
 
         # Returns a list of forwarded ports for a VM.

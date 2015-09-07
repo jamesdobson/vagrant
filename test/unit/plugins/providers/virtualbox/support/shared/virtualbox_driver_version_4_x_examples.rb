@@ -3,6 +3,167 @@ shared_examples "a version 4.x virtualbox driver" do |options|
     raise ArgumentError, "Need virtualbox context to use these shared examples." if !(defined? vbox_context)
   end
 
+  describe "attach_virtual_disks" do
+    context "with some disks already in use" do
+      before {
+        expect(subprocess).to receive(:execute).
+          with("VBoxManage", "list", "-l", "hdds", an_instance_of(Hash)).
+          and_return(subprocess_result(stdout:
+            <<-OUTPUT.gsub(/^ */, '')
+              UUID:           e1246c7c-05dd-48c5-aa5b-5ad44ce0c13e
+              Parent UUID:    base
+              State:          locked read
+              Type:           multiattach
+              Location:       /home/.vagrant.d/boxes/hashicorp-VAGRANTSLASH-precise64/1.1.0/virtualbox/box-disk1.vmdk
+              Storage format: VMDK
+              Format variant: dynamic streamOptimized
+              Capacity:       81920 MBytes
+              Size on disk:   305 MBytes
+              Child UUIDs:    1616c5a2-929c-49c1-8f66-08ab44fbc091
+
+              UUID:           1616c5a2-929c-49c1-8f66-08ab44fbc091
+              Parent UUID:    e1246c7c-05dd-48c5-aa5b-5ad44ce0c13e
+              State:          locked write
+              Type:           normal (differencing)
+              Auto-Reset:     off
+              Location:       /VirtualBox VMs/vagrant_test02_1441657718454_69597/Snapshots/{1616c5a2-929c-49c1-8f66-08ab44fbc091}.vmdk
+              Storage format: VMDK
+              Format variant: differencing default
+              Capacity:       81920 MBytes
+              Size on disk:   10 MBytes
+              In use by VMs:  vagrant_test02_1441657718454_69597 (UUID: ad89e52f-8e2b-4df7-acc3-a5dacdb0459a)
+            OUTPUT
+          )
+        )
+      }
+
+      it "attaches one disk that is already in use" do
+        expect(subprocess).to receive(:execute).
+          with("VBoxManage", "storageattach", "123",
+            "--storagectl", "SATA Controller",
+            "--port", "0",
+            "--device", "0",
+            "--type", "hdd",
+            "--medium", "/home/.vagrant.d/boxes/hashicorp-VAGRANTSLASH-precise64/1.1.0/virtualbox/box-disk1.vmdk",
+            an_instance_of(Hash)
+          ).and_return(subprocess_result(stdout: ""))
+
+        subject.attach_virtual_disks("123",
+          [
+            {
+              :controller => "SATA Controller",
+              :port => "0",
+              :device => "0",
+              :file => "/home/.vagrant.d/boxes/hashicorp-VAGRANTSLASH-precise64/1.1.0/virtualbox/box-disk1.vmdk"
+            }
+          ]
+        )
+      end
+
+      it "attaches one disk that is not in use" do
+        expect(subprocess).to receive(:execute).
+          with("VBoxManage", "storageattach", "123",
+            "--storagectl", "SATA Controller",
+            "--port", "0",
+            "--device", "0",
+            "--type", "hdd",
+            "--medium", "/test-disk.vmdk",
+            "--mtype", "multiattach",
+            an_instance_of(Hash)
+          ).and_return(subprocess_result(stdout: ""))
+
+        subject.attach_virtual_disks("123",
+          [
+            {
+              :controller => "SATA Controller",
+              :port => "0",
+              :device => "0",
+              :file => "/test-disk.vmdk"
+            }
+          ]
+        )
+      end
+    end
+  end
+
+  describe "get_machine_id" do
+    before {
+      expect(subprocess).to receive(:execute).
+        with("VBoxManage", "list", "vms", an_instance_of(Hash)).
+        and_return(subprocess_result(stdout: output))
+    }
+
+    context "with list of VMs" do
+      let(:output) {
+        <<-OUTPUT.gsub(/^ */, '')
+          "Another VM" {f6845e8c-1434-4415-b280-964c86ed6fc7}
+          "vagrant_test02_1441657718454_69597" {ad89e52f-8e2b-4df7-acc3-a5dacdb0459a}
+          "vagrant_test01_1441657738990_91195" {6b9d61f1-e553-4ee9-9ac9-ff5f04614b38}
+        OUTPUT
+      }
+
+      it "finds a VM" do
+        value = subject.get_machine_id("vagrant_test01_1441657738990_91195")
+
+        expect(value).to eq("6b9d61f1-e553-4ee9-9ac9-ff5f04614b38")
+      end
+
+      it "does not find a VM" do
+        value = subject.get_machine_id("will not be found")
+
+        expect(value).to eq(nil)
+      end
+    end
+
+    context "with empty output" do
+      let(:output) { "" }
+
+      it "returns nil" do
+        value = subject.get_machine_id("will not be found")
+
+        expect(value).to eq(nil)
+      end
+    end
+  end
+
+  describe "parse_ovf" do
+    context "with OVF with a single disk from hashicorp/precise64" do
+      before {
+        expect(File).to receive(:open).
+          with(an_instance_of(String)).
+          and_return(File.open(File.expand_path("single-disk.ovf", File.dirname(__FILE__))))
+      }
+
+      it "should have one virtual disk" do
+        virtual_disks, doc = subject.parse_ovf("/path/box.ovf")
+
+        expect(virtual_disks).to eq(
+          [
+            {
+              :controller => "SATA Controller",
+              :file => "/path/box-disk1.vmdk",
+              :port => "0",
+              :device => "0"
+            }
+          ]
+        )
+      end
+    end
+
+    context "with empty OVF" do
+      before {
+        expect(File).to receive(:open).
+          with(an_instance_of(String)).
+          and_return(StringIO.new(""))
+      }
+
+      it "should not parse correctly" do
+        expect { subject.parse_ovf("/path/box.ovf") }.
+          to raise_error Vagrant::Errors::VMImportFailure
+      end
+    end
+  end
+
   describe "read_dhcp_servers" do
     before {
       expect(subprocess).to receive(:execute).

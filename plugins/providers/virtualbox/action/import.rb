@@ -12,7 +12,8 @@ module VagrantPlugins
 
           # Import the virtual machine
           ovf_file = env[:machine].box.directory.join("box.ovf").to_s
-          env[:machine].id = env[:machine].provider.driver.import(ovf_file) do |progress|
+          method = (env[:machine].provider_config.use_linked_clone) ? :import_multiattach : :import
+          env[:machine].id = env[:machine].provider.driver.send(method, ovf_file) do |progress|
             env[:ui].clear_line
             env[:ui].report_progress(progress, 100, false)
           end

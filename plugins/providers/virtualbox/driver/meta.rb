@@ -97,6 +97,7 @@ module VagrantPlugins
           :forward_ports,
           :halt,
           :import,
+          :import_multiattach,
           :read_forwarded_ports,
           :read_bridged_interfaces,
           :read_dhcp_servers,

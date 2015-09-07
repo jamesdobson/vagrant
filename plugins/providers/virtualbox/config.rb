@@ -32,12 +32,12 @@ module VagrantPlugins
       # @return [Boolean]
       attr_accessor :gui
 
-      # If set to `true`, then a linked clone is created from a master
-      # VM generated from the specified box.
+      # If set to `true`, then a linked clone is created from the
+      # specified box and a differencing disk image for every linked clone.
       #
       # @return [Boolean]
       attr_accessor :use_linked_clone
-      
+
       # This should be set to the name of the machine in the VirtualBox
       # GUI.
       #
