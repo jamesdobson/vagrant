@@ -57,6 +57,19 @@ module VagrantPlugins
           @logger.info("VBoxManage path: #{@vboxmanage_path}")
         end
 
+        # Attaches the specified disk images to the specified VM.
+        #
+        # The format of each virtual disk should be:
+        #
+        #   {
+        #     :controller => "SATA Controller",  # Name of the controller to attach disk image
+        #     :port => "0",                      # Port to attach disk image
+        #     :device => "0",                    # Device to attach disk image
+        #     :file => "/path/to/image.vmdk"     # Path to the disk image file
+        #   }
+        #
+        # @param [String] machine_id The id of the VM.
+        # @param [Array<Hash>] virtual_disks Array of disk images to attach.
         def attach_virtual_disks(machine_id, virtual_disks)
           # Find existing disks known to VirtualBox
           output = execute("list", "-l", "hdds")
@@ -172,6 +185,10 @@ module VagrantPlugins
         def forward_ports(ports)
         end
 
+        # Gets the UUID of the VM with the specified name.
+        #
+        # @param [String] machine_name The name of the VM.
+        # @return [String] UUID of the VM.
         def get_machine_id(machine_name)
           output = execute("list", "vms", retryable: true)
           match = /^"#{Regexp.escape(machine_name)}" \{(.+?)\}$/.match(output)
