@@ -74,6 +74,8 @@ module VagrantPlugins
           # Find existing disks known to VirtualBox
           output = execute("list", "-l", "hdds")
           lines = output.split("\n")
+          known_files = lines.select() { |line| line.start_with?('Location:') }
+            .map() { |line| File.absolute_path(line.sub(/^Location:\s*([^\s](.*))$/, '\1')) }
 
           # Attach disks to the VM
           virtual_disks.each do |disk|
@@ -85,7 +87,7 @@ module VagrantPlugins
               "--medium", disk[:file]
             ]
 
-            if lines.index {|line| line.index(disk[:file]) != nil} == nil
+            if known_files.none? { |known_file| File.identical?(known_file, disk[:file]) }
               params << "--mtype" << "multiattach"
             end
 
